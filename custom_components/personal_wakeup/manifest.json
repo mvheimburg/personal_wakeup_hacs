@@ -6,7 +6,7 @@
   ],
   "config_flow": true,
   "dependencies": [],
-  "documentation": "https://gitlab.com/m9643/personal_wakeup",
+  "documentation": "https://github.com/mvheimburg/personal_wakeup_hacs",
   "homekit": {},
   "integration_type": "hub",
   "iot_class": "calculated",
