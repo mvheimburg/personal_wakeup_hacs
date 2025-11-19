@@ -1,0 +1,17 @@
+{
+  "domain": "personal_wakeup",
+  "name": "Personal WakeUp",
+  "codeowners": [
+    "@mvheimburg"
+  ],
+  "config_flow": true,
+  "dependencies": [],
+  "documentation": "https://gitlab.com/m9643/personal_wakeup",
+  "homekit": {},
+  "integration_type": "hub",
+  "iot_class": "calculated",
+  "quality_scale": "bronze",
+  "requirements": [],
+  "ssdp": [],
+  "zeroconf": []
+}
