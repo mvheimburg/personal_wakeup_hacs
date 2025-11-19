@@ -3,6 +3,6 @@
   "content_in_root": true,
   "filename": "wakeup-alarm-card.js",
   "render_readme": true,
-  "domains": ["personal_wakeup"],
+  "domain": ["personal_wakeup"],
   "homeassistant": "2024.8.0"
 }
