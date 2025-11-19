@@ -1,0 +1,3 @@
+[submodule "custom_components/personal_wakeup"]
+	path = custom_components/personal_wakeup
+	url = git@gitlab.com:m9643/personal_wakeup.git
