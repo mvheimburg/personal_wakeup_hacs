@@ -187,10 +187,10 @@ class WakeupAlarmEntity(Entity):
             asdict(self._config),
         )
 
-        await self._reschedule()
+    await self._reschedule()
         self.async_write_ha_state()
 
-    async def _reschedule(self) -> None:
+        async def _reschedule(self) -> None:
         """Compute next fire time and schedule callback."""
         from homeassistant.helpers.event import async_track_point_in_time
         from homeassistant.util import dt as dt_util
@@ -217,10 +217,17 @@ class WakeupAlarmEntity(Entity):
         now_utc = dt_util.utcnow()
         local_now = dt_util.as_local(now_utc)
 
-        today_fire = datetime.combine(local_now.date(), self._config.time_of_day)
+        # Make today_fire timezone-aware using the same tzinfo as local_now
+        today_fire = datetime.combine(
+            local_now.date(),
+            self._config.time_of_day,
+            tzinfo=local_now.tzinfo,
+        )
+
         if today_fire <= local_now:
             today_fire += timedelta(days=1)
 
+        # store as UTC
         self._next_fire = dt_util.as_utc(today_fire)
         self._state = "armed"
 
@@ -240,6 +247,7 @@ class WakeupAlarmEntity(Entity):
         self._unsubscribe = async_track_point_in_time(
             self.hass, _cb, self._next_fire
         )
+
 
     async def _run_alarm(self) -> None:
         """Execute the wakeup sequence if allowed by presence."""
