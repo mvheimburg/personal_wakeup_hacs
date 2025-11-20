@@ -195,3 +195,7 @@ class WakeupAlarmEntity(Entity):
             },
             blocking=False,
         )
+
+
+    async def async_trigger(self) -> None:
+        await self._run_alarm()
