@@ -187,10 +187,10 @@ class WakeupAlarmEntity(Entity):
             asdict(self._config),
         )
 
-    await self._reschedule()
+        await self._reschedule()
         self.async_write_ha_state()
 
-        async def _reschedule(self) -> None:
+    async def _reschedule(self) -> None:
         """Compute next fire time and schedule callback."""
         from homeassistant.helpers.event import async_track_point_in_time
         from homeassistant.util import dt as dt_util
