@@ -9,7 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.entity import Entity
 
-from .const import DOMAIN
+from .const import DOMAIN, CONF_REQUIRE_HOME, CONF_PERSON_ENTITY
 
 
 @dataclass
@@ -60,14 +60,13 @@ class WakeupAlarmEntity(Entity):
         self._next_fire: datetime | None = None
         self._state: str = "disarmed"
 
-        # Optional: device tracker constraint
-        # Expect these to be provided in entry.options, e.g. from config_flow:
-        #   options["device_tracker_entity"] = "device_tracker.phone"
-        #   options["require_home"] = True
-        self._device_tracker_entity: str | None = entry.options.get(
-            "device_tracker_entity"
+        # options from config entry (person / require_home)
+        self._person_entity: str | None = entry.options.get(CONF_PERSON_ENTITY)
+        self._require_home: bool = bool(
+            entry.options.get(CONF_REQUIRE_HOME, False)
         )
-        self._require_home: bool = bool(entry.options.get("require_home", False))
+
+        self._unsubscribe = None  # handle from async_track_point_in_time
 
     @property
     def state(self) -> str:
@@ -77,20 +76,21 @@ class WakeupAlarmEntity(Entity):
     def extra_state_attributes(self) -> dict[str, object]:
         return {
             "enabled": self._config.enabled,
-            "time_of_day": self._config.time_of_day.isoformat(),
+            "time_of_day": self._config.time_of_day.isoformat(timespec="minutes"),
             "fade_duration": self._config.fade_duration,
             "volume": self._config.volume,
             "playlist": self._config.playlist,
             "next_fire": self._next_fire.isoformat() if self._next_fire else None,
-            "device_tracker_entity": self._device_tracker_entity,
             "require_home": self._require_home,
+            "person_entity": self._person_entity,
         }
 
     async def async_added_to_hass(self) -> None:
         await self._reschedule()
 
     async def async_set_config(self, data: dict) -> None:
-        """Accept partial updates from the UI card or service."""
+        """Update runtime config from the frontend service."""
+        # Accept partial updates from the UI card
         if "enabled" in data:
             self._config.enabled = bool(data["enabled"])
 
@@ -108,49 +108,54 @@ class WakeupAlarmEntity(Entity):
         if "playlist" in data:
             self._config.playlist = str(data["playlist"])
 
-        # Allow changing device tracker + require_home via config service too (optional)
-        if "device_tracker_entity" in data:
-            value = data["device_tracker_entity"]
-            self._device_tracker_entity = str(value) if value else None
+        # re-read require_home/person from options if you want them editable later
 
-        if "require_home" in data:
-            self._require_home = bool(data["require_home"])
-
+        # 🔴 This is the important part:
         await self._reschedule()
         self.async_write_ha_state()
 
     async def _reschedule(self) -> None:
-        """Schedule the next alarm run based on current config."""
-        from homeassistant.helpers.event import async_track_point_in_time  # lazy import
+        """Compute next fire time and schedule callback."""
+        from homeassistant.helpers.event import async_track_point_in_time
+        from homeassistant.util import dt as dt_util
 
-        # cancel previous listener if you keep a handle (not stored yet in this version)
+        # cancel previous listener if any
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+
         if not self._config.enabled:
             self._next_fire = None
             self._state = "disarmed"
             return
 
-        now = datetime.now()
-        today_fire = datetime.combine(now.date(), self._config.time_of_day)
-        if today_fire <= now:
+        now = dt_util.utcnow()
+        # convert to local date for the time-of-day
+        local_now = dt_util.as_local(now)
+        today_fire = datetime.combine(local_now.date(), self._config.time_of_day)
+        if today_fire <= local_now:
             today_fire += timedelta(days=1)
 
-        self._next_fire = today_fire
+        # store as UTC
+        self._next_fire = dt_util.as_utc(today_fire)
         self._state = "armed"
 
         async def _cb(_now: datetime) -> None:
             await self._run_alarm()
 
-        async_track_point_in_time(self.hass, _cb, today_fire)
+        self._unsubscribe = async_track_point_in_time(
+            self.hass, _cb, self._next_fire
+        )
+
 
     async def _run_alarm(self) -> None:
-        """Check preconditions and trigger the alarm sequence (light + music)."""
-
-        # If we require the device to be home, check device_tracker state
-        if self._require_home and self._device_tracker_entity:
-            tracker_state = self.hass.states.get(self._device_tracker_entity)
-            if not tracker_state or tracker_state.state != "home":
-                # Device not home → skip this run, reschedule for next day
-                self._state = "waiting_for_home"
+        """Execute the wakeup sequence if allowed by presence."""
+        # presence gate
+        if self._require_home and self._person_entity:
+            person_state = self.hass.states.get(self._person_entity)
+            if not person_state or person_state.state != "home":
+                # user not home -> skip alarm, but still reschedule
+                self._state = "skipped"
                 self.async_write_ha_state()
                 await self._reschedule()
                 return
@@ -158,13 +163,12 @@ class WakeupAlarmEntity(Entity):
         self._state = "triggered"
         self.async_write_ha_state()
 
-        # Do the light fade + music via services; you can call Music Assistant here
         await self._fade_light()
         await self._start_music()
 
-        # Reschedule for the next day
+        # reschedule for next day
         await self._reschedule()
-
+        
     async def _fade_light(self) -> None:
         # Example: use a fixed light/entity from entry.options
         light_entity = self._entry.options["light_entity"]

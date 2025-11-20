@@ -15,7 +15,7 @@ from .const import (
     DOMAIN,
     CONF_LIGHT_ENTITY,
     CONF_MA_PLAYER_ENTITY,
-    CONF_DEVICE_TRACKER_ENTITY,
+    CONF_PERSON_ENTITY,
     CONF_REQUIRE_HOME,
 )
 
@@ -40,9 +40,9 @@ def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
                 default=defaults.get(CONF_MA_PLAYER_ENTITY),
             ): selector({"entity": {"domain": "media_player"}}),
             vol.Optional(
-                CONF_DEVICE_TRACKER_ENTITY,
-                default=defaults.get(CONF_DEVICE_TRACKER_ENTITY),
-            ): selector({"entity": {"domain": "device_tracker"}}),
+                CONF_PERSON_ENTITY,
+                default=defaults.get(CONF_PERSON_ENTITY),
+            ): selector({"entity": {"domain": "person"}}),
             vol.Required(
                 CONF_REQUIRE_HOME,
                 default=defaults.get(CONF_REQUIRE_HOME, DEFAULT_REQUIRE_HOME),
