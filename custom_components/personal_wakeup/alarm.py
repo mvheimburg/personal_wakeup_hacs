@@ -7,7 +7,7 @@ import logging
 from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER_DOMAIN
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_ENTITY_ID, CONF_NAME
+from homeassistant.const import ATTR_ENTITY_ID, CONF_NAME, CONF_PLAYLIST_OPTIONS
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.entity import Entity
 
@@ -112,12 +112,16 @@ class WakeupAlarmEntity(Entity):
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
+        playlist_options: list[str] = self._entry.options.get(
+            CONF_PLAYLIST_OPTIONS, [])
+        
         return {
             "enabled": self._config.enabled,
             "time_of_day": self._config.time_of_day.isoformat(timespec="minutes"),
             "fade_duration": self._config.fade_duration,
             "volume": self._config.volume,
             "playlist": self._config.playlist,
+            "playlist_options": playlist_options,  # 👈 this is what the card uses
             "next_fire": self._next_fire.isoformat() if self._next_fire else None,
             "require_home": self._require_home,
             "person_entity": self._person_entity,

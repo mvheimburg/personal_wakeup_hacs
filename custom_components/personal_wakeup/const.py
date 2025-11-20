@@ -10,5 +10,6 @@ CONF_LIGHT_ENTITY = "light_entity"
 CONF_MA_PLAYER_ENTITY = "ma_player_entity"
 CONF_PERSON_ENTITY = "person_entity"
 CONF_REQUIRE_HOME = "require_home"
+CONF_PLAYLIST_OPTIONS = "playlist_options"
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]

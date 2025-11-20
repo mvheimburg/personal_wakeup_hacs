@@ -17,20 +17,30 @@ from .const import (
     CONF_MA_PLAYER_ENTITY,
     CONF_PERSON_ENTITY,
     CONF_REQUIRE_HOME,
+    CONF_PLAYLIST_OPTIONS,
 )
 
 DEFAULT_NAME = "Wakeup Alarm"
 DEFAULT_REQUIRE_HOME = False
 
 
+def _normalize_playlists(raw: str | list[str] | None) -> list[str]:
+    """Turn a comma-separated string or list into a clean list of playlist IDs."""
+    if isinstance(raw, list):
+        return raw
+    if not raw:
+        return []
+    return [p.strip() for p in str(raw).split(",") if p.strip()]
+
 def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
     defaults = defaults or {}
+    # playlists in defaults is a list, convert to comma string for the form
+    playlists_default_list: list[str] = defaults.get(CONF_PLAYLIST_OPTIONS, [])
+    playlists_default_str = ",".join(playlists_default_list)
+
     return vol.Schema(
         {
-            vol.Required(
-                CONF_NAME,
-                default=defaults.get(CONF_NAME, DEFAULT_NAME),
-            ): str,
+            vol.Required(CONF_NAME, default=defaults.get(CONF_NAME, DEFAULT_NAME)): str,
             vol.Required(
                 CONF_LIGHT_ENTITY,
                 default=defaults.get(CONF_LIGHT_ENTITY),
@@ -47,6 +57,10 @@ def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
                 CONF_REQUIRE_HOME,
                 default=defaults.get(CONF_REQUIRE_HOME, DEFAULT_REQUIRE_HOME),
             ): selector({"boolean": {}}),
+            vol.Optional(
+                CONF_PLAYLIST_OPTIONS,
+                default=playlists_default_str,
+            ): str,
         }
     )
 
@@ -68,12 +82,14 @@ class PersonalWakeupConfigFlow(ConfigFlow, domain=DOMAIN):
             elif not user_input.get(CONF_MA_PLAYER_ENTITY):
                 errors["base"] = "no_player_entity"
             else:
+                playlists = _normalize_playlists(user_input.get(CONF_PLAYLIST_OPTIONS))
                 name = user_input[CONF_NAME]
                 options = {
                     k: v
                     for k, v in user_input.items()
-                    if k != CONF_NAME
+                    if k not in (CONF_NAME, CONF_PLAYLIST_OPTIONS)
                 }
+                options[CONF_PLAYLIST_OPTIONS] = playlists
 
                 return self.async_create_entry(
                     title=name,
