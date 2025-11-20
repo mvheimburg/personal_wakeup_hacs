@@ -1,13 +1,11 @@
-"""Sensor platform for Personal Wakeup integration."""
-
+# sensor.py
 from __future__ import annotations
 
-from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import DOMAIN
+from .alarm import WakeupAlarmEntity
 
 
 async def async_setup_entry(
@@ -15,21 +13,6 @@ async def async_setup_entry(
     entry: ConfigEntry,
     async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Set up the Personal Wakeup sensor."""
-    async_add_entities([PersonalWakeupStatusSensor(entry)])
-
-
-class PersonalWakeupStatusSensor(SensorEntity):
-    """Simple sensor reflecting the wakeup alarm status."""
-
-    _attr_has_entity_name = True
-
-    def __init__(self, entry: ConfigEntry) -> None:
-        self._entry = entry
-        self._attr_unique_id = f"{entry.entry_id}_status"
-        self._attr_name = "Wakeup Alarm Status"
-        self._attr_native_value = "idle"
-
-    @property
-    def should_poll(self) -> bool:
-        return False
+    """Set up the Personal Wakeup entity from a config entry."""
+    entity = WakeupAlarmEntity(hass, entry)
+    async_add_entities([entity])
