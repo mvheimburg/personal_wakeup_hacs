@@ -1,53 +1,137 @@
-"""Config flow for the Personal WakeUp integration."""
+"""Config flow for the Personal Wakeup integration."""
 
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any, cast
+from typing import Any
 
 import voluptuous as vol
 
-from homeassistant.components.sensor import DOMAIN as SENSOR_DOMAIN
-from homeassistant.const import CONF_ENTITY_ID
-from homeassistant.helpers import selector
-from homeassistant.helpers.schema_config_entry_flow import (
-    SchemaConfigFlowHandler,
-    SchemaFlowFormStep,
-    SchemaFlowMenuStep,
+from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
+from homeassistant.const import CONF_NAME
+from homeassistant.core import callback
+from homeassistant.helpers.selector import selector
+
+from .const import (
+    DOMAIN,
+    CONF_LIGHT_ENTITY,
+    CONF_MA_PLAYER_ENTITY,
+    CONF_DEVICE_TRACKER_ENTITY,
+    CONF_REQUIRE_HOME,
 )
 
-from .const import DOMAIN
-
-OPTIONS_SCHEMA = vol.Schema(
-    {
-        vol.Required(CONF_ENTITY_ID): selector.EntitySelector(
-            selector.EntitySelectorConfig(domain=SENSOR_DOMAIN)
-        ),
-    }
-)
-
-CONFIG_SCHEMA = vol.Schema(
-    {
-        vol.Required("name"): selector.TextSelector(),
-    }
-).extend(OPTIONS_SCHEMA.schema)
-
-CONFIG_FLOW: dict[str, SchemaFlowFormStep | SchemaFlowMenuStep] = {
-    "user": SchemaFlowFormStep(CONFIG_SCHEMA)
-}
-
-OPTIONS_FLOW: dict[str, SchemaFlowFormStep | SchemaFlowMenuStep] = {
-    "init": SchemaFlowFormStep(OPTIONS_SCHEMA)
-}
+DEFAULT_NAME = "Wakeup Alarm"
+DEFAULT_REQUIRE_HOME = False
 
 
-class ConfigFlowHandler(SchemaConfigFlowHandler, domain=DOMAIN):
-    """Handle a config or options flow for Personal WakeUp."""
+def _base_schema(defaults: dict[str, Any] | None = None) -> vol.Schema:
+    defaults = defaults or {}
+    return vol.Schema(
+        {
+            vol.Required(
+                CONF_NAME,
+                default=defaults.get(CONF_NAME, DEFAULT_NAME),
+            ): str,
+            vol.Required(
+                CONF_LIGHT_ENTITY,
+                default=defaults.get(CONF_LIGHT_ENTITY),
+            ): selector({"entity": {"domain": "light"}}),
+            vol.Required(
+                CONF_MA_PLAYER_ENTITY,
+                default=defaults.get(CONF_MA_PLAYER_ENTITY),
+            ): selector({"entity": {"domain": "media_player"}}),
+            vol.Optional(
+                CONF_DEVICE_TRACKER_ENTITY,
+                default=defaults.get(CONF_DEVICE_TRACKER_ENTITY),
+            ): selector({"entity": {"domain": "device_tracker"}}),
+            vol.Required(
+                CONF_REQUIRE_HOME,
+                default=defaults.get(CONF_REQUIRE_HOME, DEFAULT_REQUIRE_HOME),
+            ): selector({"boolean": {}}),
+        }
+    )
 
-    config_flow = CONFIG_FLOW
-    # TODO remove the options_flow if the integration does not have an options flow
-    options_flow = OPTIONS_FLOW
 
-    def async_config_entry_title(self, options: Mapping[str, Any]) -> str:
-        """Return config entry title."""
-        return cast(str, options["name"]) if "name" in options else ""
+class PersonalWakeupConfigFlow(ConfigFlow, domain=DOMAIN):
+    """Handle the config flow for Personal Wakeup."""
+
+    VERSION = 1
+
+    async def async_step_user(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ):
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            if not user_input.get(CONF_LIGHT_ENTITY):
+                errors["base"] = "no_light_entity"
+            elif not user_input.get(CONF_MA_PLAYER_ENTITY):
+                errors["base"] = "no_player_entity"
+            else:
+                name = user_input[CONF_NAME]
+                options = {
+                    k: v
+                    for k, v in user_input.items()
+                    if k != CONF_NAME
+                }
+
+                return self.async_create_entry(
+                    title=name,
+                    data={},
+                    options=options,
+                )
+
+        defaults: dict[str, Any] = {CONF_NAME: DEFAULT_NAME}
+        return self.async_show_form(
+            step_id="user",
+            data_schema=_base_schema(defaults),
+            errors=errors,
+        )
+
+    @staticmethod
+    @callback
+    def async_get_options_flow(
+        config_entry: ConfigEntry,
+    ) -> "PersonalWakeupOptionsFlow":
+        return PersonalWakeupOptionsFlow(config_entry)
+
+
+class PersonalWakeupOptionsFlow(OptionsFlow):
+    """Handle options for Personal Wakeup."""
+
+    def __init__(self, config_entry: ConfigEntry) -> None:
+        self._entry = config_entry
+
+    async def async_step_init(
+        self,
+        user_input: dict[str, Any] | None = None,
+    ):
+        errors: dict[str, str] = {}
+
+        if user_input is not None:
+            if not user_input.get(CONF_LIGHT_ENTITY):
+                errors["base"] = "no_light_entity"
+            elif not user_input.get(CONF_MA_PLAYER_ENTITY):
+                errors["base"] = "no_player_entity"
+            else:
+                name = user_input.get(CONF_NAME) or self._entry.title
+                options = {
+                    k: v
+                    for k, v in user_input.items()
+                    if k != CONF_NAME
+                }
+
+                return self.async_create_entry(
+                    title=name,
+                    data=options,
+                )
+
+        current = {**self._entry.options}
+        current.setdefault(CONF_NAME, self._entry.title)
+        current.setdefault(CONF_REQUIRE_HOME, DEFAULT_REQUIRE_HOME)
+
+        return self.async_show_form(
+            step_id="init",
+            data_schema=_base_schema(current),
+            errors=errors,
+        )

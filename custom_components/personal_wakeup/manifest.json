@@ -1,6 +1,7 @@
 {
   "domain": "personal_wakeup",
   "name": "Personal WakeUp",
+  "version": "0.1.0",
   "codeowners": [
     "@mvheimburg"
   ],
