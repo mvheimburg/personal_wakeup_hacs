@@ -1,39 +1,35 @@
-"""Sensor platform for Personal WakeUp integration."""
+"""Sensor platform for Personal Wakeup integration."""
 
 from __future__ import annotations
 
 from homeassistant.components.sensor import SensorEntity
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import CONF_ENTITY_ID
 from homeassistant.core import HomeAssistant
-from homeassistant.helpers import entity_registry as er
-from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+from .const import DOMAIN
 
 
 async def async_setup_entry(
     hass: HomeAssistant,
-    config_entry: ConfigEntry,
-    async_add_entities: AddConfigEntryEntitiesCallback,
+    entry: ConfigEntry,
+    async_add_entities: AddEntitiesCallback,
 ) -> None:
-    """Initialize Personal WakeUp config entry."""
-    registry = er.async_get(hass)
-    # Validate + resolve entity registry id to entity_id
-    entity_id = er.async_validate_entity_id(
-        registry, config_entry.options[CONF_ENTITY_ID]
-    )
-    # TODO Optionally validate config entry options before creating entity
-    name = config_entry.title
-    unique_id = config_entry.entry_id
-
-    async_add_entities([personal_wakeupSensorEntity(unique_id, name, entity_id)])
+    """Set up the Personal Wakeup sensor."""
+    async_add_entities([PersonalWakeupStatusSensor(entry)])
 
 
-class personal_wakeupSensorEntity(SensorEntity):
-    """personal_wakeup Sensor."""
+class PersonalWakeupStatusSensor(SensorEntity):
+    """Simple sensor reflecting the wakeup alarm status."""
 
-    def __init__(self, unique_id: str, name: str, wrapped_entity_id: str) -> None:
-        """Initialize personal_wakeup Sensor."""
-        super().__init__()
-        self._wrapped_entity_id = wrapped_entity_id
-        self._attr_name = name
-        self._attr_unique_id = unique_id
+    _attr_has_entity_name = True
+
+    def __init__(self, entry: ConfigEntry) -> None:
+        self._entry = entry
+        self._attr_unique_id = f"{entry.entry_id}_status"
+        self._attr_name = "Wakeup Alarm Status"
+        self._attr_native_value = "idle"
+
+    @property
+    def should_poll(self) -> bool:
+        return False
