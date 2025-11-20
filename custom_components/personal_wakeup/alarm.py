@@ -7,7 +7,7 @@ import logging
 from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER_DOMAIN
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_ENTITY_ID
+from homeassistant.const import ATTR_ENTITY_ID, CONF_NAME
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.entity import Entity
 
@@ -77,8 +77,9 @@ class WakeupAlarmEntity(Entity):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self._entry = entry
-        self._attr_unique_id = entry.entry_id
-        self._attr_name = "Wakeup Alarm"
+        alarm_name = entry.options.get(CONF_NAME, "Wakeup Alarm")
+        self._attr_name = alarm_name
+        self._attr_unique_id = f"{entry.entry_id}_{alarm_name.lower().replace(' ', '_')}"
 
         self._config = WakeupConfig(
             time_of_day=time(7, 0),
@@ -181,10 +182,20 @@ class WakeupAlarmEntity(Entity):
         if "playlist" in data:
             self._config.playlist = str(data["playlist"])
 
+        # 🔹 apply presence settings coming from the GUI
+        if "require_home" in data:
+            self._require_home = bool(data["require_home"])
+            _LOGGER.debug(
+                "require_home updated for %s -> %s",
+                self.entity_id,
+                self._require_home,
+            )
+
         _LOGGER.debug(
-            "Config after async_set_config for %s: %s",
+            "Config after async_set_config for %s: %s (require_home=%s)",
             self.entity_id,
             asdict(self._config),
+            self._require_home,
         )
 
         await self._reschedule()
