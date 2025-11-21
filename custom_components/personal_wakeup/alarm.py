@@ -7,11 +7,11 @@ import logging
 from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER_DOMAIN
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_ENTITY_ID, CONF_NAME, CONF_PLAYLIST_OPTIONS
+from homeassistant.const import ATTR_ENTITY_ID, CONF_NAME
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.entity import Entity
 
-from .const import DOMAIN, CONF_REQUIRE_HOME, CONF_PERSON_ENTITY
+from .const import DOMAIN, CONF_REQUIRE_HOME, CONF_PERSON_ENTITY, CONF_PLAYLIST_OPTIONS
 
 _LOGGER = logging.getLogger(__name__)
 
