@@ -4,6 +4,8 @@ from dataclasses import dataclass, asdict
 from datetime import datetime, time, timedelta
 import logging
 
+import asyncio
+
 from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER_DOMAIN
 from homeassistant.config_entries import ConfigEntry
@@ -316,7 +318,7 @@ class WakeupAlarmEntity(Entity):
         self.async_write_ha_state()
 
     async def _fade_light(self) -> None:
-        """Fade the configured light up over fade_duration."""
+        """Fade the configured light up over fade_duration, even if transition is unsupported."""
         light_entity = self._entry.options.get("light_entity")
         if not light_entity:
             _LOGGER.warning(
@@ -325,21 +327,58 @@ class WakeupAlarmEntity(Entity):
             )
             return
 
+        duration = max(1, int(self._config.fade_duration))  # seconds
+        # How often we send a brightness update (in seconds)
+        step_seconds = 5
+        steps = max(1, duration // step_seconds)
+
         _LOGGER.info(
-            "Fading light %s for %s over %s seconds",
+            "Starting manual fade for %s over %s seconds in %s steps "
+            "(~%s seconds per step)",
             light_entity,
-            self.entity_id,
-            self._config.fade_duration,
+            duration,
+            steps,
+            step_seconds,
         )
-        await self.hass.services.async_call(
-            LIGHT_DOMAIN,
-            "turn_on",
-            {
-                "entity_id": light_entity,
-                "brightness": 255,
-                "transition": self._config.fade_duration,
-            },
-            blocking=False,
+
+        # Start from very low brightness
+        for step in range(1, steps + 1):
+            # Linear ramp 1..255
+            brightness = int(255 * step / steps)
+            _LOGGER.debug(
+                "Fade step %s/%s for %s: brightness=%s",
+                step,
+                steps,
+                light_entity,
+                brightness,
+            )
+            await self.hass.services.async_call(
+                LIGHT_DOMAIN,
+                "turn_on",
+                {
+                    "entity_id": light_entity,
+                    "brightness": brightness,
+                },
+                blocking=False,
+            )
+
+            # Don't sleep after the last step
+            if step < steps:
+                try:
+                    await asyncio.sleep(step_seconds)
+                except asyncio.CancelledError:
+                    _LOGGER.info(
+                        "Fade for %s cancelled at step %s/%s",
+                        light_entity,
+                        step,
+                        steps,
+                    )
+                    break
+
+        _LOGGER.info(
+            "Manual fade complete for %s (brightness=%s)",
+            light_entity,
+            255,
         )
 
     async def _start_music(self) -> None:
