@@ -25,6 +25,7 @@ class WakeupConfig:
     fade_duration: int  # seconds
     volume: float
     playlist: str
+    fade_music_duration: int  = 300 # seconds
 
 
 async def async_setup_entry(
@@ -100,6 +101,9 @@ class WakeupAlarmEntity(Entity):
         )
 
         self._unsubscribe = None  # handle from async_track_point_in_time
+        # run state / cancellation
+        self._running: bool = False
+        self._cancel_requested: bool = False
 
         _LOGGER.debug(
             "WakeupAlarmEntity init: entry_id=%s options=%s config=%s",
@@ -259,66 +263,92 @@ class WakeupAlarmEntity(Entity):
             _LOGGER.info(
                 "Wakeup alarm callback fired for %s at %s", self.entity_id, _now
             )
-            await self._run_alarm()
+            await self._start_alarm(ignore_presence=False)
 
         self._unsubscribe = async_track_point_in_time(
             self.hass, _cb, self._next_fire
         )
 
 
-    async def _run_alarm(self) -> None:
-        """Execute the wakeup sequence if allowed by presence."""
+    async def _start_alarm(self, *, ignore_presence: bool = False) -> None:
+        """Start an alarm run, cancelling any currently running one first."""
+        if self._running:
+            _LOGGER.info(
+                "Wakeup alarm %s already running, requesting cancel before restart",
+                self.entity_id,
+            )
+            self._cancel_requested = True
+            # wait until the current run finishes its cleanup
+            while self._running:
+                await asyncio.sleep(0.5)
+
+        # clear cancel flag for the new run
+        self._cancel_requested = False
+        await self._run_alarm(ignore_presence=ignore_presence)
+
+    async def _run_alarm(self, *, ignore_presence: bool = False) -> None:
+        """Execute the wakeup sequence, optionally ignoring presence rules."""
+        if self._running:
+            # Should not normally happen because _start_alarm handles it,
+            # but keep this as a safeguard.
+            _LOGGER.info(
+                "Wakeup alarm %s _run_alarm called while already running; bailing",
+                self.entity_id,
+            )
+            return
+
+        self._running = True
         _LOGGER.info(
-            "Running wakeup alarm for %s (require_home=%s person_entity=%s)",
+            "Running wakeup alarm for %s (require_home=%s person_entity=%s ignore_presence=%s)",
             self.entity_id,
             self._require_home,
             self._person_entity,
+            ignore_presence,
         )
 
-        # presence gate
-        if self._require_home and self._person_entity:
-            person_state = self.hass.states.get(self._person_entity)
-            _LOGGER.debug(
-                "Presence check for %s: state=%s",
-                self._person_entity,
-                person_state.state if person_state else None,
-            )
-            if not person_state or person_state.state != "home":
-                # user not home -> skip alarm, but still reschedule
-                _LOGGER.info(
-                    "Skipping wakeup alarm for %s because %s is not home",
-                    self.entity_id,
+        try:
+            # presence gate (only if not ignored)
+            if not ignore_presence and self._require_home and self._person_entity:
+                person_state = self.hass.states.get(self._person_entity)
+                _LOGGER.debug(
+                    "Presence check for %s: state=%s",
                     self._person_entity,
+                    person_state.state if person_state else None,
                 )
-                self._state = "skipped"
-                self.async_write_ha_state()
-                await self._reschedule()
-                return
+                if not person_state or person_state.state != "home":
+                    _LOGGER.info(
+                        "Skipping wakeup alarm for %s because %s is not home",
+                        self.entity_id,
+                        self._person_entity,
+                    )
+                    self._state = "skipped"
+                    self.async_write_ha_state()
+                    await self._reschedule()
+                    return
 
-        self._state = "triggered"
-        self.async_write_ha_state()
-        _LOGGER.info("Wakeup alarm TRIGGERED for %s", self.entity_id)
+            self._state = "triggered"
+            self.async_write_ha_state()
+            _LOGGER.info("Wakeup alarm TRIGGERED for %s", self.entity_id)
 
-        try:
-            await self._fade_light()
-        except Exception as exc:
-            _LOGGER.error(
-                "Error while fading light for %s: %s", self.entity_id, exc
-            )
+            # run light + music fades in parallel
+            try:
+                await asyncio.gather(
+                    self._fade_light(),
+                    self._fade_music(),
+                )
+            except Exception as exc:
+                _LOGGER.error(
+                    "Error during alarm sequence for %s: %s", self.entity_id, exc
+                )
 
-        try:
-            await self._start_music()
-        except Exception as exc:
-            _LOGGER.error(
-                "Error while starting music for %s: %s", self.entity_id, exc
-            )
+            await self._reschedule()
+            self.async_write_ha_state()
 
-        # reschedule for next day
-        await self._reschedule()
-        self.async_write_ha_state()
+        finally:
+            self._running = False
 
     async def _fade_light(self) -> None:
-        """Fade the configured light up over fade_duration, even if transition is unsupported."""
+        """Fade the configured light up over fade_duration."""
         light_entity = self._entry.options.get("light_entity")
         if not light_entity:
             _LOGGER.warning(
@@ -328,30 +358,35 @@ class WakeupAlarmEntity(Entity):
             return
 
         duration = max(1, int(self._config.fade_duration))  # seconds
-        # How often we send a brightness update (in seconds)
         step_seconds = 5
         steps = max(1, duration // step_seconds)
 
         _LOGGER.info(
-            "Starting manual fade for %s over %s seconds in %s steps "
-            "(~%s seconds per step)",
+            "Starting manual light fade for %s over %s seconds in %s steps",
             light_entity,
             duration,
             steps,
-            step_seconds,
         )
 
-        # Start from very low brightness
         for step in range(1, steps + 1):
-            # Linear ramp 1..255
+            if self._cancel_requested:
+                _LOGGER.info(
+                    "Light fade for %s cancelled at step %s/%s",
+                    light_entity,
+                    step,
+                    steps,
+                )
+                return
+
             brightness = int(255 * step / steps)
             _LOGGER.debug(
-                "Fade step %s/%s for %s: brightness=%s",
+                "Light fade step %s/%s for %s: brightness=%s",
                 step,
                 steps,
                 light_entity,
                 brightness,
             )
+
             await self.hass.services.async_call(
                 LIGHT_DOMAIN,
                 "turn_on",
@@ -362,57 +397,118 @@ class WakeupAlarmEntity(Entity):
                 blocking=False,
             )
 
-            # Don't sleep after the last step
             if step < steps:
                 try:
                     await asyncio.sleep(step_seconds)
                 except asyncio.CancelledError:
                     _LOGGER.info(
-                        "Fade for %s cancelled at step %s/%s",
+                        "Light fade for %s cancelled during sleep at step %s/%s",
                         light_entity,
                         step,
                         steps,
                     )
-                    break
+                    return
 
         _LOGGER.info(
-            "Manual fade complete for %s (brightness=%s)",
-            light_entity,
-            255,
+            "Manual light fade complete for %s (brightness=255)", light_entity
         )
 
-    async def _start_music(self) -> None:
-        """Start playlist using Music Assistant."""
-        player_entity = self._entry.options.get("ma_player_entity")
-        playlist_uri = self._config.playlist
+    async def _fade_music(self) -> None:
+        """Fade music volume from 0 to target over the light fade duration."""
+        from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER_DOMAIN
 
+        player_entity = self._entry.options.get("ma_player_entity")
         if not player_entity:
             _LOGGER.warning(
-                "No ma_player_entity configured in options for %s; skipping music",
+                "No ma_player_entity configured for %s; skipping music fade",
                 self.entity_id,
             )
             return
 
+        duration = max(1, int(self._config.fade_duration))  # seconds
+        step_seconds = 5
+        steps = max(1, duration // step_seconds)
+
+        target_volume = float(self._config.volume or 0.0)
+        target_volume = max(0.0, min(target_volume, 1.0))
+
         _LOGGER.info(
-            "Starting playlist %r on %s for %s",
-            playlist_uri,
+            "Starting music fade for %s over %s seconds in %s steps (target_volume=%.2f)",
             player_entity,
-            self.entity_id,
+            duration,
+            steps,
+            target_volume,
         )
 
-        await self.hass.services.async_call(
-            "music_assistant",
-            "play_media",
-            {
-                "entity_id": player_entity,
-                "media_id": playlist_uri,
-                "media_type": "playlist",
-                "enqueue": "replace",
-            },
-            blocking=False,
+        # set initial volume to 0
+        try:
+            await self.hass.services.async_call(
+                MEDIA_PLAYER_DOMAIN,
+                "volume_set",
+                {"entity_id": player_entity, "volume_level": 0.0},
+                blocking=False,
+            )
+        except Exception as exc:
+            _LOGGER.error(
+                "Error setting initial volume for %s: %s", player_entity, exc
+            )
+
+        # start playback
+        await self._start_music_playback()
+
+        for step in range(1, steps + 1):
+            if self._cancel_requested:
+                _LOGGER.info(
+                    "Music fade for %s cancelled at step %s/%s",
+                    player_entity,
+                    step,
+                    steps,
+                )
+                return
+
+            volume = target_volume * (step / steps)
+            _LOGGER.debug(
+                "Music fade step %s/%s for %s: volume=%.3f",
+                step,
+                steps,
+                player_entity,
+                volume,
+            )
+
+            try:
+                await self.hass.services.async_call(
+                    MEDIA_PLAYER_DOMAIN,
+                    "volume_set",
+                    {"entity_id": player_entity, "volume_level": volume},
+                    blocking=False,
+                )
+            except Exception as exc:
+                _LOGGER.error(
+                    "Error setting volume for %s at step %s/%s: %s",
+                    player_entity,
+                    step,
+                    steps,
+                    exc,
+                )
+
+            if step < steps:
+                try:
+                    await asyncio.sleep(step_seconds)
+                except asyncio.CancelledError:
+                    _LOGGER.info(
+                        "Music fade for %s cancelled during sleep at step %s/%s",
+                        player_entity,
+                        step,
+                        steps,
+                    )
+                    return
+
+        _LOGGER.info(
+            "Music fade complete for %s (volume=%.2f)", player_entity, target_volume
         )
 
     async def async_trigger(self) -> None:
         """Manually trigger the alarm (service call)."""
         _LOGGER.info("Manual trigger of wakeup alarm for %s", self.entity_id)
-        await self._run_alarm()
+        # manual triggers ignore presence
+        await self._start_alarm(ignore_presence=True)
