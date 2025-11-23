@@ -123,7 +123,7 @@ class WakeupAlarmEntity(Entity):
             "fade_duration": self._config.fade_duration,
             "volume": self._config.volume,
             "playlist": self._config.playlist,
-            "playlist_options": playlist_options,  # 👈 this is what the card uses
+            "playlist_options": playlist_options,
             "next_fire": self._next_fire.isoformat() if self._next_fire else None,
             "require_home": self._require_home,
             "person_entity": self._person_entity,
