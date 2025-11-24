@@ -12,6 +12,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_ENTITY_ID, CONF_NAME
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.helpers.entity import Entity
+from homeassistant.util import slugify
 
 from .const import DOMAIN, CONF_REQUIRE_HOME, CONF_PERSON_ENTITY, CONF_PLAYLIST_OPTIONS
 
@@ -82,8 +83,23 @@ class WakeupAlarmEntity(Entity):
         self._entry = entry
         alarm_name = entry.options.get(CONF_NAME, "Wakeup Alarm")
         playlist_options = entry.options.get(CONF_PLAYLIST_OPTIONS, [])
-        self._attr_name = alarm_name
-        self._attr_unique_id = f"{entry.entry_id}_{alarm_name.lower().replace(' ', '_')}"
+
+        person_entity: str | None = entry.options.get(CONF_PERSON_ENTITY)
+        pretty_person: str | None = None
+        if person_entity and "." in person_entity:
+            # "person.matilde" -> "matilde" -> "Matilde"
+            pretty_person = person_entity.split(".", 1)[1].replace("_", " ").title()
+
+        if pretty_person:
+            friendly_name = f"{pretty_person} wakeup"
+        else:
+            # fall back to entry title or generic
+            friendly_name = entry.title or "Wakeup Alarm"
+
+        # This is what shows up in the UI:
+        self._attr_name = friendly_name
+        safe = slugify(friendly_name)  # e.g. "Matilde wakeup" -> "matilde_wakeup"
+        self._attr_unique_id = f"{entry.entry_id}_{safe}"
 
         self._config = WakeupConfig(
             time_of_day=time(7, 0),
@@ -415,9 +431,12 @@ class WakeupAlarmEntity(Entity):
         )
 
     async def _fade_music(self) -> None:
-        """Fade music volume from 0 to target over the light fade duration."""
-        from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER_DOMAIN
+        """Fade music volume around the end of the light fade.
 
+        Music fade duration is self._config.fade_music_duration.
+        It starts half that time BEFORE the light reaches 100%,
+        and ends half that time AFTER the light reaches 100%.
+        """
         player_entity = self._entry.options.get("ma_player_entity")
         if not player_entity:
             _LOGGER.warning(
@@ -426,22 +445,78 @@ class WakeupAlarmEntity(Entity):
             )
             return
 
-        duration = max(1, int(self._config.fade_duration))  # seconds
+        # Light fade duration (seconds)
+        light_duration = max(1, int(self._config.fade_duration))
+
+        # Music fade duration (seconds) - separate from light
+        music_duration = int(self._config.fade_music_duration or 0)
+        if music_duration <= 0:
+            # fall back to light duration if not set
+            music_duration = light_duration
+
+        # music fade is centered on the light's end:
+        #   start = light_duration - music_duration/2
+        #   end   = start + music_duration
+        # clamp start to >= 0
+        initial_delay = max(0.0, light_duration - music_duration / 2.0)
+
+        # Step resolution
         step_seconds = 5
-        steps = max(1, duration // step_seconds)
+        steps = max(1, music_duration // step_seconds)
 
         target_volume = float(self._config.volume or 0.0)
         target_volume = max(0.0, min(target_volume, 1.0))
 
         _LOGGER.info(
-            "Starting music fade for %s over %s seconds in %s steps (target_volume=%.2f)",
+            "Preparing music fade for %s: light_duration=%s, music_duration=%s, "
+            "initial_delay=%.1f, steps=%s, target_volume=%.2f",
             player_entity,
-            duration,
+            light_duration,
+            music_duration,
+            initial_delay,
             steps,
             target_volume,
         )
 
-        # set initial volume to 0
+        # Wait until it's time to start fading (unless cancelled)
+        waited = 0.0
+        while waited < initial_delay:
+            if self._cancel_requested:
+                _LOGGER.info(
+                    "Music fade for %s cancelled during initial delay at %.1fs/%.1fs",
+                    player_entity,
+                    waited,
+                    initial_delay,
+                )
+                return
+            sleep_chunk = min(step_seconds, initial_delay - waited)
+            try:
+                await asyncio.sleep(sleep_chunk)
+            except asyncio.CancelledError:
+                _LOGGER.info(
+                    "Music fade for %s cancelled during sleep before start",
+                    player_entity,
+                )
+                return
+            waited += sleep_chunk
+
+        # At this point, we're 'music_duration/2' seconds before light max.
+        # Start playback at volume 0 and begin ramp.
+        if self._cancel_requested:
+            _LOGGER.info(
+                "Music fade for %s cancelled just before start", player_entity
+            )
+            return
+
+        _LOGGER.info(
+            "Starting music fade for %s over %s seconds in %s steps (target_volume=%.2f)",
+            player_entity,
+            music_duration,
+            steps,
+            target_volume,
+        )
+
+        # Set initial volume to 0
         try:
             await self.hass.services.async_call(
                 MEDIA_PLAYER_DOMAIN,
@@ -454,9 +529,10 @@ class WakeupAlarmEntity(Entity):
                 "Error setting initial volume for %s: %s", player_entity, exc
             )
 
-        # start playback
+        # Start playback via Music Assistant
         await self._start_music_playback()
 
+        # Ramp volume from 0 -> target_volume over music_duration
         for step in range(1, steps + 1):
             if self._cancel_requested:
                 _LOGGER.info(
@@ -507,6 +583,47 @@ class WakeupAlarmEntity(Entity):
         _LOGGER.info(
             "Music fade complete for %s (volume=%.2f)", player_entity, target_volume
         )
+
+
+    async def _start_music_playback(self) -> None:
+        """Start playback via Music Assistant without handling volume."""
+        player_entity = self._entry.options.get("ma_player_entity")
+        playlist_uri = self._config.playlist
+
+        if not player_entity:
+            _LOGGER.warning(
+                "No ma_player_entity configured in options for %s; skipping music",
+                self.entity_id,
+            )
+            return
+
+        _LOGGER.info(
+            "Starting playlist %r on %s for %s",
+            playlist_uri,
+            player_entity,
+            self.entity_id,
+        )
+
+        try:
+            await self.hass.services.async_call(
+                "music_assistant",
+                "play_media",
+                {
+                    "entity_id": player_entity,
+                    "media_id": playlist_uri,
+                    "media_type": "playlist",
+                    "enqueue": "replace",
+                },
+                blocking=False,
+            )
+        except Exception as exc:
+            _LOGGER.error(
+                "Error calling music_assistant.play_media for %s: %s",
+                self.entity_id,
+                exc,
+            )
+
+
 
     async def async_trigger(self) -> None:
         """Manually trigger the alarm (service call)."""
