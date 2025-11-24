@@ -81,6 +81,7 @@ class WakeupAlarmEntity(Entity):
         self.hass = hass
         self._entry = entry
         alarm_name = entry.options.get(CONF_NAME, "Wakeup Alarm")
+        playlist_options = entry.options.get(CONF_PLAYLIST_OPTIONS, [])
         self._attr_name = alarm_name
         self._attr_unique_id = f"{entry.entry_id}_{alarm_name.lower().replace(' ', '_')}"
 
@@ -89,7 +90,7 @@ class WakeupAlarmEntity(Entity):
             enabled=True,
             fade_duration=900,
             volume=0.25,
-            playlist="morning_chill",
+            playlist=playlist_options[0],
         )
         self._next_fire: datetime | None = None
         self._state: str = "disarmed"
