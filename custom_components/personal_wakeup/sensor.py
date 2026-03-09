@@ -12,10 +12,13 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .alarm import WakeupAlarmEntity
 from .const import (
+    DEFAULT_SNOOZE_MINUTES,
     DATA_ALARM_ENTITIES,
     DATA_SERVICES_REGISTERED,
     DOMAIN,
     SERVICE_SET_CONFIG,
+    SERVICE_SNOOZE,
+    SERVICE_STOP,
     SERVICE_TRIGGER_NOW,
 )
 
@@ -37,6 +40,24 @@ SET_CONFIG_SCHEMA = vol.Schema(
 )
 
 TRIGGER_NOW_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_ENTITY_ID): cv.entity_id,
+    },
+    extra=vol.PREVENT_EXTRA,
+)
+
+SNOOZE_SCHEMA = vol.Schema(
+    {
+        vol.Optional(ATTR_ENTITY_ID): cv.entity_id,
+        vol.Optional("duration_minutes", default=DEFAULT_SNOOZE_MINUTES): vol.All(
+            vol.Coerce(int),
+            vol.Range(min=1, max=240),
+        ),
+    },
+    extra=vol.PREVENT_EXTRA,
+)
+
+STOP_SCHEMA = vol.Schema(
     {
         vol.Optional(ATTR_ENTITY_ID): cv.entity_id,
     },
@@ -101,6 +122,18 @@ def _register_services_once(hass: HomeAssistant) -> None:
             return
         await target.async_trigger()
 
+    async def handle_snooze(call: ServiceCall) -> None:
+        target = _resolve_target_entity(hass, dict(call.data))
+        if target is None:
+            return
+        await target.async_snooze(call.data["duration_minutes"])
+
+    async def handle_stop(call: ServiceCall) -> None:
+        target = _resolve_target_entity(hass, dict(call.data))
+        if target is None:
+            return
+        await target.async_stop()
+
     hass.services.async_register(
         DOMAIN,
         SERVICE_SET_CONFIG,
@@ -112,6 +145,18 @@ def _register_services_once(hass: HomeAssistant) -> None:
         SERVICE_TRIGGER_NOW,
         handle_trigger_now,
         schema=TRIGGER_NOW_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_SNOOZE,
+        handle_snooze,
+        schema=SNOOZE_SCHEMA,
+    )
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_STOP,
+        handle_stop,
+        schema=STOP_SCHEMA,
     )
 
     domain_data[DATA_SERVICES_REGISTERED] = True
@@ -127,6 +172,8 @@ def _unregister_services_if_unused(hass: HomeAssistant) -> None:
     if domain_data.get(DATA_SERVICES_REGISTERED):
         hass.services.async_remove(DOMAIN, SERVICE_SET_CONFIG)
         hass.services.async_remove(DOMAIN, SERVICE_TRIGGER_NOW)
+        hass.services.async_remove(DOMAIN, SERVICE_SNOOZE)
+        hass.services.async_remove(DOMAIN, SERVICE_STOP)
         domain_data[DATA_SERVICES_REGISTERED] = False
 
 

@@ -18,5 +18,9 @@ DATA_SERVICES_REGISTERED = "services_registered"
 
 SERVICE_SET_CONFIG = "set_config"
 SERVICE_TRIGGER_NOW = "trigger_now"
+SERVICE_SNOOZE = "snooze"
+SERVICE_STOP = "stop"
+
+DEFAULT_SNOOZE_MINUTES = 10
 
 PLATFORMS: list[Platform] = [Platform.SENSOR]

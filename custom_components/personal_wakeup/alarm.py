@@ -14,7 +14,14 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
 from homeassistant.util import slugify
 
-from .const import CONF_PLAYLIST_OPTIONS, CONF_PERSON_ENTITY, CONF_REQUIRE_HOME
+from .const import (
+    CONF_LIGHT_ENTITY,
+    CONF_MA_PLAYER_ENTITY,
+    CONF_PLAYLIST_OPTIONS,
+    CONF_PERSON_ENTITY,
+    CONF_REQUIRE_HOME,
+    DEFAULT_SNOOZE_MINUTES,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -112,6 +119,10 @@ class WakeupAlarmEntity(Entity):
             "next_fire": self._next_fire.isoformat() if self._next_fire else None,
             "require_home": self._require_home,
             "person_entity": self._person_entity,
+            "running": self._running,
+            "can_snooze": self._running or self._state == "triggered",
+            "can_stop": self._running or self._state in {"triggered", "snoozed"},
+            "snooze_minutes": DEFAULT_SNOOZE_MINUTES,
         }
 
     async def async_added_to_hass(self) -> None:
@@ -229,7 +240,6 @@ class WakeupAlarmEntity(Entity):
 
     async def _reschedule(self) -> None:
         """Compute next fire time and schedule callback."""
-        from homeassistant.helpers.event import async_track_point_in_time
         from homeassistant.util import dt as dt_util
 
         _LOGGER.debug(
@@ -265,26 +275,90 @@ class WakeupAlarmEntity(Entity):
             today_fire += timedelta(days=1)
 
         # store as UTC
-        self._next_fire = dt_util.as_utc(today_fire)
-        self._state = "armed"
+        await self._schedule_callback(
+            dt_util.as_utc(today_fire),
+            state="armed",
+            ignore_presence=False,
+        )
+
+    async def _schedule_callback(
+        self,
+        fire_at: datetime,
+        *,
+        state: str,
+        ignore_presence: bool,
+    ) -> None:
+        """Schedule a one-shot alarm callback."""
+        from homeassistant.helpers.event import async_track_point_in_time
+
+        self._next_fire = fire_at
+        self._state = state
 
         _LOGGER.info(
-            "Wakeup alarm %s scheduled: local=%s utc=%s",
+            "Wakeup alarm %s scheduled: state=%s utc=%s ignore_presence=%s",
             self.entity_id,
-            today_fire,
+            state,
             self._next_fire,
+            ignore_presence,
         )
 
         async def _cb(_now: datetime) -> None:
             _LOGGER.info(
                 "Wakeup alarm callback fired for %s at %s", self.entity_id, _now
             )
-            await self._start_alarm(ignore_presence=False)
+            await self._start_alarm(ignore_presence=ignore_presence)
 
-        self._unsubscribe = async_track_point_in_time(
-            self.hass, _cb, self._next_fire
+        self._unsubscribe = async_track_point_in_time(self.hass, _cb, self._next_fire)
+
+    async def _schedule_snooze(self, duration_minutes: int) -> None:
+        """Schedule a one-off snoozed alarm."""
+        from homeassistant.util import dt as dt_util
+
+        minutes = max(1, int(duration_minutes))
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+
+        snooze_at = dt_util.utcnow() + timedelta(minutes=minutes)
+        await self._schedule_callback(
+            snooze_at,
+            state="snoozed",
+            ignore_presence=True,
         )
 
+    async def _cancel_active_run(self) -> None:
+        """Request cancellation and wait for the active run to stop."""
+        self._cancel_requested = True
+
+        run_task = self._run_task
+        if run_task and not run_task.done() and run_task is not asyncio.current_task():
+            run_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await run_task
+
+        while self._running and self._run_task is not asyncio.current_task():
+            await asyncio.sleep(0.1)
+
+    async def _stop_music_playback(self) -> None:
+        """Stop playback on the configured media player."""
+        player_entity = self._entry.options.get(CONF_MA_PLAYER_ENTITY)
+        if not player_entity:
+            return
+
+        try:
+            await self.hass.services.async_call(
+                MEDIA_PLAYER_DOMAIN,
+                "media_stop",
+                {"entity_id": player_entity},
+                blocking=False,
+            )
+        except Exception as exc:
+            _LOGGER.error(
+                "Error stopping playback for %s on %s: %s",
+                self.entity_id,
+                player_entity,
+                exc,
+            )
 
     async def _start_alarm(self, *, ignore_presence: bool = False) -> None:
         """Start an alarm run, cancelling any currently running one first."""
@@ -365,10 +439,11 @@ class WakeupAlarmEntity(Entity):
         finally:
             self._running = False
             self._run_task = None
+            self.async_write_ha_state()
 
     async def _fade_light(self) -> None:
         """Fade the configured light up over fade_duration."""
-        light_entity = self._entry.options.get("light_entity")
+        light_entity = self._entry.options.get(CONF_LIGHT_ENTITY)
         if not light_entity:
             _LOGGER.warning(
                 "No light_entity configured in options for %s; skipping light fade",
@@ -439,7 +514,7 @@ class WakeupAlarmEntity(Entity):
         It starts half that time BEFORE the light reaches 100%,
         and ends half that time AFTER the light reaches 100%.
         """
-        player_entity = self._entry.options.get("ma_player_entity")
+        player_entity = self._entry.options.get(CONF_MA_PLAYER_ENTITY)
         if not player_entity:
             _LOGGER.warning(
                 "No ma_player_entity configured for %s; skipping music fade",
@@ -589,7 +664,7 @@ class WakeupAlarmEntity(Entity):
 
     async def _start_music_playback(self) -> None:
         """Start playback via Music Assistant without handling volume."""
-        player_entity = self._entry.options.get("ma_player_entity")
+        player_entity = self._entry.options.get(CONF_MA_PLAYER_ENTITY)
         playlist_uri = self._config.playlist
 
         if not player_entity:
@@ -638,3 +713,34 @@ class WakeupAlarmEntity(Entity):
         _LOGGER.info("Manual trigger of wakeup alarm for %s", self.entity_id)
         # manual triggers ignore presence
         await self._start_alarm(ignore_presence=True)
+
+    async def async_snooze(
+        self, duration_minutes: int = DEFAULT_SNOOZE_MINUTES
+    ) -> None:
+        """Cancel the current run and schedule a short one-off retry."""
+        if not self._running and self._state not in {"triggered", "snoozed"}:
+            _LOGGER.info(
+                "Ignoring snooze for %s because no active alarm is present",
+                self.entity_id,
+            )
+            return
+
+        _LOGGER.info(
+            "Snoozing wakeup alarm for %s by %s minute(s)",
+            self.entity_id,
+            duration_minutes,
+        )
+
+        await self._cancel_active_run()
+        await self._stop_music_playback()
+        await self._schedule_snooze(duration_minutes)
+        self.async_write_ha_state()
+
+    async def async_stop(self) -> None:
+        """Stop the current run or cancel a pending snooze."""
+        _LOGGER.info("Stopping wakeup alarm for %s", self.entity_id)
+
+        await self._cancel_active_run()
+        await self._stop_music_playback()
+        await self._reschedule()
+        self.async_write_ha_state()

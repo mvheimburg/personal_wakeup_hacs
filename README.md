@@ -25,6 +25,10 @@ Domain: `personal_wakeup`
 : Update runtime alarm settings (`entity_id`, `enabled`, `time_of_day`, `fade_duration`, `volume`, `playlist`, `require_home`).
 - `trigger_now`
 : Trigger alarm immediately (`entity_id`).
+- `snooze`
+: Stop the current run and trigger it again after `duration_minutes` (defaults to 10).
+- `stop`
+: Stop the current run and cancel any active snooze.
 
 ## Notes
 - Integration entities are created on the `sensor` platform.

@@ -61,3 +61,38 @@ trigger_now:
           integration: personal_wakeup
           domain: sensor
           multiple: false
+
+snooze:
+  name: Snooze
+  description: Stop the current wakeup run and re-trigger it after a short delay.
+  fields:
+    entity_id:
+      name: Wakeup entity
+      description: Target Personal Wakeup sensor entity.
+      selector:
+        entity:
+          integration: personal_wakeup
+          domain: sensor
+          multiple: false
+    duration_minutes:
+      name: Snooze duration
+      description: Number of minutes before the wakeup routine runs again.
+      selector:
+        number:
+          min: 1
+          max: 240
+          mode: box
+          unit_of_measurement: minutes
+
+stop:
+  name: Stop
+  description: Stop the current wakeup run and cancel any active snooze.
+  fields:
+    entity_id:
+      name: Wakeup entity
+      description: Target Personal Wakeup sensor entity.
+      selector:
+        entity:
+          integration: personal_wakeup
+          domain: sensor
+          multiple: false
