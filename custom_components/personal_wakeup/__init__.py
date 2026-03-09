@@ -5,7 +5,7 @@ from __future__ import annotations
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 
-from .const import DOMAIN, PLATFORMS
+from .const import DOMAIN, DATA_CONFIG_ENTRIES, PLATFORMS
 
 
 async def async_setup(hass: HomeAssistant, config: dict) -> bool:
@@ -15,8 +15,9 @@ async def async_setup(hass: HomeAssistant, config: dict) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up Personal Wakeup from a config entry."""
-    hass.data.setdefault(DOMAIN, {})
-    hass.data[DOMAIN][entry.entry_id] = entry
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    config_entries = domain_data.setdefault(DATA_CONFIG_ENTRIES, {})
+    config_entries[entry.entry_id] = entry
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
 
@@ -42,5 +43,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry, PLATFORMS
     )
     if unload_ok:
-        hass.data[DOMAIN].pop(entry.entry_id, None)
+        domain_data = hass.data.get(DOMAIN, {})
+        config_entries = domain_data.get(DATA_CONFIG_ENTRIES, {})
+        config_entries.pop(entry.entry_id, None)
     return unload_ok

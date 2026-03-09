@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import suppress
 from dataclasses import dataclass, asdict
 from datetime import datetime, time, timedelta
 import logging
@@ -9,12 +10,11 @@ import asyncio
 from homeassistant.components.light import DOMAIN as LIGHT_DOMAIN
 from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER_DOMAIN
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.const import ATTR_ENTITY_ID, CONF_NAME
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
 from homeassistant.util import slugify
 
-from .const import DOMAIN, CONF_REQUIRE_HOME, CONF_PERSON_ENTITY, CONF_PLAYLIST_OPTIONS
+from .const import CONF_PLAYLIST_OPTIONS, CONF_PERSON_ENTITY, CONF_REQUIRE_HOME
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -26,51 +26,7 @@ class WakeupConfig:
     fade_duration: int  # seconds
     volume: float
     playlist: str
-    fade_music_duration: int  = 300 # seconds
-
-
-async def async_setup_entry(
-    hass: HomeAssistant,
-    entry: ConfigEntry,
-    async_add_entities,
-) -> None:
-    """Set up the wakeup alarm entity and register services."""
-    _LOGGER.info("Setting up Personal Wakeup for entry %s", entry.entry_id)
-
-    entity = WakeupAlarmEntity(hass, entry)
-    async_add_entities([entity])
-
-    async def handle_set_config(call: ServiceCall) -> None:
-        _LOGGER.debug(
-            "personal_wakeup.set_config called: data=%s", dict(call.data)
-        )
-        # In future you might support multiple entities per config entry via entity_id,
-        # for now we ignore entity_id and always apply to this entity.
-        data = dict(call.data)
-        data.pop(ATTR_ENTITY_ID, None)
-        await entity.async_set_config(data)
-
-    async def handle_trigger_now(call: ServiceCall) -> None:
-        _LOGGER.info(
-            "personal_wakeup.trigger_now called for entry_id=%s, data=%s",
-            entry.entry_id,
-            dict(call.data),
-        )
-        await entity.async_trigger()
-
-    hass.services.async_register(
-        DOMAIN,
-        "set_config",
-        handle_set_config,
-    )
-
-    hass.services.async_register(
-        DOMAIN,
-        "trigger_now",
-        handle_trigger_now,
-    )
-
-    _LOGGER.info("Personal Wakeup services registered for entry %s", entry.entry_id)
+    fade_music_duration: int = 300  # seconds
 
 
 class WakeupAlarmEntity(Entity):
@@ -81,8 +37,10 @@ class WakeupAlarmEntity(Entity):
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self._entry = entry
-        alarm_name = entry.options.get(CONF_NAME, "Wakeup Alarm")
         playlist_options = entry.options.get(CONF_PLAYLIST_OPTIONS, [])
+        if not isinstance(playlist_options, list):
+            playlist_options = []
+        default_playlist = playlist_options[0] if playlist_options else ""
 
         person_entity: str | None = entry.options.get(CONF_PERSON_ENTITY)
         pretty_person: str | None = None
@@ -106,7 +64,7 @@ class WakeupAlarmEntity(Entity):
             enabled=True,
             fade_duration=900,
             volume=0.25,
-            playlist=playlist_options[0],
+            playlist=default_playlist,
         )
         self._next_fire: datetime | None = None
         self._state: str = "disarmed"
@@ -121,6 +79,7 @@ class WakeupAlarmEntity(Entity):
         # run state / cancellation
         self._running: bool = False
         self._cancel_requested: bool = False
+        self._run_task: asyncio.Task | None = None
 
         _LOGGER.debug(
             "WakeupAlarmEntity init: entry_id=%s options=%s config=%s",
@@ -133,11 +92,16 @@ class WakeupAlarmEntity(Entity):
     def state(self) -> str:
         return self._state
 
+    def _playlist_options(self) -> list[str]:
+        raw = self._entry.options.get(CONF_PLAYLIST_OPTIONS, [])
+        if not isinstance(raw, list):
+            return []
+        return [str(item).strip() for item in raw if str(item).strip()]
+
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        playlist_options: list[str] = self._entry.options.get(
-            CONF_PLAYLIST_OPTIONS, [])
-        
+        playlist_options = self._playlist_options()
+
         return {
             "enabled": self._config.enabled,
             "time_of_day": self._config.time_of_day.isoformat(timespec="minutes"),
@@ -159,6 +123,22 @@ class WakeupAlarmEntity(Entity):
         await self._reschedule()
         self.async_write_ha_state()
 
+    async def async_will_remove_from_hass(self) -> None:
+        """Cancel runtime listeners/tasks before entity is removed."""
+        if self._unsubscribe is not None:
+            self._unsubscribe()
+            self._unsubscribe = None
+
+        self._cancel_requested = True
+        run_task = self._run_task
+        if run_task and not run_task.done() and run_task is not asyncio.current_task():
+            run_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await run_task
+
+        self._next_fire = None
+        self._state = "disarmed"
+
     async def async_set_config(self, data: dict) -> None:
         """Update runtime config from the frontend service."""
         _LOGGER.debug(
@@ -174,8 +154,16 @@ class WakeupAlarmEntity(Entity):
 
         if "time_of_day" in data:
             try:
-                hh, mm = map(int, str(data["time_of_day"]).split(":"))
-                self._config.time_of_day = time(hour=hh, minute=mm)
+                raw_time = data["time_of_day"]
+                if isinstance(raw_time, time):
+                    self._config.time_of_day = raw_time.replace(
+                        second=0,
+                        microsecond=0,
+                    )
+                else:
+                    parts = str(raw_time).split(":")
+                    hh, mm = map(int, parts[:2])
+                    self._config.time_of_day = time(hour=hh, minute=mm)
             except Exception as exc:
                 _LOGGER.error(
                     "Invalid time_of_day %r in async_set_config for %s: %s",
@@ -207,7 +195,18 @@ class WakeupAlarmEntity(Entity):
                 )
 
         if "playlist" in data:
-            self._config.playlist = str(data["playlist"])
+            playlist = str(data["playlist"]).strip()
+            options = self._playlist_options()
+            if options and playlist and playlist not in options:
+                _LOGGER.warning(
+                    "Ignoring unknown playlist %r for %s",
+                    playlist,
+                    self.entity_id,
+                )
+            elif options and not playlist:
+                self._config.playlist = options[0]
+            else:
+                self._config.playlist = playlist
 
         # 🔹 apply presence settings coming from the GUI
         if "require_home" in data:
@@ -315,6 +314,7 @@ class WakeupAlarmEntity(Entity):
             return
 
         self._running = True
+        self._run_task = asyncio.current_task()
         _LOGGER.info(
             "Running wakeup alarm for %s (require_home=%s person_entity=%s ignore_presence=%s)",
             self.entity_id,
@@ -341,6 +341,7 @@ class WakeupAlarmEntity(Entity):
                     self._state = "skipped"
                     self.async_write_ha_state()
                     await self._reschedule()
+                    self.async_write_ha_state()
                     return
 
             self._state = "triggered"
@@ -363,6 +364,7 @@ class WakeupAlarmEntity(Entity):
 
         finally:
             self._running = False
+            self._run_task = None
 
     async def _fade_light(self) -> None:
         """Fade the configured light up over fade_duration."""
@@ -593,6 +595,12 @@ class WakeupAlarmEntity(Entity):
         if not player_entity:
             _LOGGER.warning(
                 "No ma_player_entity configured in options for %s; skipping music",
+                self.entity_id,
+            )
+            return
+        if not playlist_uri:
+            _LOGGER.warning(
+                "No playlist configured for %s; skipping music playback",
                 self.entity_id,
             )
             return

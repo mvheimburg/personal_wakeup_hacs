@@ -12,4 +12,11 @@ CONF_PERSON_ENTITY = "person_entity"
 CONF_REQUIRE_HOME = "require_home"
 CONF_PLAYLIST_OPTIONS = "playlist_options"
 
+DATA_CONFIG_ENTRIES = "config_entries"
+DATA_ALARM_ENTITIES = "alarm_entities"
+DATA_SERVICES_REGISTERED = "services_registered"
+
+SERVICE_SET_CONFIG = "set_config"
+SERVICE_TRIGGER_NOW = "trigger_now"
+
 PLATFORMS: list[Platform] = [Platform.SENSOR]

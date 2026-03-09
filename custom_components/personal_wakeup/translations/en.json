@@ -1,22 +1,39 @@
 {
-    "config": {
-        "step": {
-            "user": {
-                "data": {
-                    "entity_id": "Input sensor",
-                    "name": "Name"
-                },
-                "description": "New NEW_NAME Sensor"
-            }
-        }
+  "config": {
+    "error": {
+      "no_light_entity": "A light entity is required.",
+      "no_player_entity": "A media player entity is required."
     },
-    "options": {
-        "step": {
-            "init": {
-                "data": {
-                    "entity_id": "[%key:component::NEW_DOMAIN::config::step::user::description%]"
-                }
-            }
+    "step": {
+      "user": {
+        "description": "Configure your Personal Wakeup alarm.",
+        "data": {
+          "name": "Name",
+          "light_entity": "Light entity",
+          "ma_player_entity": "Media player entity",
+          "person_entity": "Person entity",
+          "require_home": "Only trigger when person is home",
+          "playlist_options": "Playlist options (comma-separated)"
         }
+      }
     }
+  },
+  "options": {
+    "error": {
+      "no_light_entity": "A light entity is required.",
+      "no_player_entity": "A media player entity is required."
+    },
+    "step": {
+      "init": {
+        "data": {
+          "name": "Name",
+          "light_entity": "Light entity",
+          "ma_player_entity": "Media player entity",
+          "person_entity": "Person entity",
+          "require_home": "Only trigger when person is home",
+          "playlist_options": "Playlist options (comma-separated)"
+        }
+      }
+    }
+  }
 }
