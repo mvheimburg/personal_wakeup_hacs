@@ -12,6 +12,7 @@ from homeassistant.components.media_player import DOMAIN as MEDIA_PLAYER_DOMAIN
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.util import slugify
 
 from .const import (
@@ -36,7 +37,7 @@ class WakeupConfig:
     fade_music_duration: int = 300  # seconds
 
 
-class WakeupAlarmEntity(Entity):
+class WakeupAlarmEntity(RestoreEntity, Entity):
     """Single wakeup alarm entity for this config entry."""
 
     _attr_has_entity_name = True
@@ -125,12 +126,85 @@ class WakeupAlarmEntity(Entity):
             "snooze_minutes": DEFAULT_SNOOZE_MINUTES,
         }
 
+    def _apply_runtime_settings(self, data: dict[str, object]) -> None:
+        """Apply runtime settings from service data or restored state."""
+        if "enabled" in data:
+            self._config.enabled = bool(data["enabled"])
+
+        if "time_of_day" in data:
+            try:
+                raw_time = data["time_of_day"]
+                if isinstance(raw_time, time):
+                    self._config.time_of_day = raw_time.replace(
+                        second=0,
+                        microsecond=0,
+                    )
+                else:
+                    parts = str(raw_time).split(":")
+                    hh, mm = map(int, parts[:2])
+                    self._config.time_of_day = time(hour=hh, minute=mm)
+            except Exception as exc:
+                _LOGGER.error(
+                    "Invalid time_of_day %r for %s: %s",
+                    data["time_of_day"],
+                    self.entity_id,
+                    exc,
+                )
+
+        if "fade_duration" in data:
+            try:
+                self._config.fade_duration = int(data["fade_duration"])
+            except Exception as exc:
+                _LOGGER.error(
+                    "Invalid fade_duration %r for %s: %s",
+                    data["fade_duration"],
+                    self.entity_id,
+                    exc,
+                )
+
+        if "volume" in data:
+            try:
+                self._config.volume = float(data["volume"])
+            except Exception as exc:
+                _LOGGER.error(
+                    "Invalid volume %r for %s: %s",
+                    data["volume"],
+                    self.entity_id,
+                    exc,
+                )
+
+        if "playlist" in data:
+            playlist = str(data["playlist"]).strip()
+            options = self._playlist_options()
+            if options and playlist and playlist not in options:
+                _LOGGER.warning(
+                    "Ignoring unknown playlist %r for %s",
+                    playlist,
+                    self.entity_id,
+                )
+            elif options and not playlist:
+                self._config.playlist = options[0]
+            else:
+                self._config.playlist = playlist
+
+        if "require_home" in data:
+            self._require_home = bool(data["require_home"])
+
     async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
         _LOGGER.info(
             "WakeupAlarmEntity added to hass (entry_id=%s, entity_id=%s)",
             self._entry.entry_id,
             self.entity_id,
         )
+        last_state = await self.async_get_last_state()
+        if last_state is not None:
+            _LOGGER.debug(
+                "Restoring runtime settings for %s from last state attrs=%s",
+                self.entity_id,
+                dict(last_state.attributes),
+            )
+            self._apply_runtime_settings(dict(last_state.attributes))
         await self._reschedule()
         self.async_write_ha_state()
 
@@ -159,74 +233,7 @@ class WakeupAlarmEntity(Entity):
             asdict(self._config),
         )
 
-        # Accept partial updates from the UI card
-        if "enabled" in data:
-            self._config.enabled = bool(data["enabled"])
-
-        if "time_of_day" in data:
-            try:
-                raw_time = data["time_of_day"]
-                if isinstance(raw_time, time):
-                    self._config.time_of_day = raw_time.replace(
-                        second=0,
-                        microsecond=0,
-                    )
-                else:
-                    parts = str(raw_time).split(":")
-                    hh, mm = map(int, parts[:2])
-                    self._config.time_of_day = time(hour=hh, minute=mm)
-            except Exception as exc:
-                _LOGGER.error(
-                    "Invalid time_of_day %r in async_set_config for %s: %s",
-                    data["time_of_day"],
-                    self.entity_id,
-                    exc,
-                )
-
-        if "fade_duration" in data:
-            try:
-                self._config.fade_duration = int(data["fade_duration"])
-            except Exception as exc:
-                _LOGGER.error(
-                    "Invalid fade_duration %r in async_set_config for %s: %s",
-                    data["fade_duration"],
-                    self.entity_id,
-                    exc,
-                )
-
-        if "volume" in data:
-            try:
-                self._config.volume = float(data["volume"])
-            except Exception as exc:
-                _LOGGER.error(
-                    "Invalid volume %r in async_set_config for %s: %s",
-                    data["volume"],
-                    self.entity_id,
-                    exc,
-                )
-
-        if "playlist" in data:
-            playlist = str(data["playlist"]).strip()
-            options = self._playlist_options()
-            if options and playlist and playlist not in options:
-                _LOGGER.warning(
-                    "Ignoring unknown playlist %r for %s",
-                    playlist,
-                    self.entity_id,
-                )
-            elif options and not playlist:
-                self._config.playlist = options[0]
-            else:
-                self._config.playlist = playlist
-
-        # 🔹 apply presence settings coming from the GUI
-        if "require_home" in data:
-            self._require_home = bool(data["require_home"])
-            _LOGGER.debug(
-                "require_home updated for %s -> %s",
-                self.entity_id,
-                self._require_home,
-            )
+        self._apply_runtime_settings(data)
 
         _LOGGER.debug(
             "Config after async_set_config for %s: %s (require_home=%s)",

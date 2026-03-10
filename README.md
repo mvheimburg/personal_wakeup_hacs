@@ -33,3 +33,4 @@ Domain: `personal_wakeup`
 ## Notes
 - Integration entities are created on the `sensor` platform.
 - For UI control, pair this integration with the `lovelace-personal-wakeup-card` repo.
+- Runtime alarm settings changed from the card are restored on the next Home Assistant startup.
